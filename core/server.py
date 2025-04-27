@@ -1,30 +1,35 @@
 from typing import Dict, List, Optional, Tuple
 import flwr as fl
-from flwr.common import Metrics
+from flwr.common import Metrics, FitRes
 from utils.eco_metrics import aggregate_sustainability_metrics
-from config.settings import CARBON_SAVINGS_TARGET
+from config.settings import CARBON_SAVINGS_TARGET, MIN_AVAILABLE_CLIENTS, MIN_FIT_CLIENTS
 
 class EcoFedStrategy(fl.server.strategy.FedAvg):
     def __init__(self):
-        super().__init__()
+        super().__init__(
+            min_available_clients=MIN_AVAILABLE_CLIENTS,
+            min_fit_clients=MIN_FIT_CLIENTS
+        )
         self.energy_history = []
         self.carbon_history = []
         self.accuracy_history = []
         self.best_carbon_savings = 0.0
         
-    def aggregate_fit(self, server_round: int, results: List, failures: List):
+    def aggregate_fit(self, server_round: int, results: List[Tuple[fl.server.client_proxy.ClientProxy, FitRes]], failures: List):
         # Aggregate weights using default FedAvg
         aggregated_weights, metrics = super().aggregate_fit(server_round, results, failures)
         
         # Aggregate sustainability metrics
-        round_energy, round_carbon = aggregate_sustainability_metrics(results)
-        self.energy_history.append(round_energy)
-        self.carbon_history.append(round_carbon)
-        
-        # Calculate carbon savings
-        if server_round > 1:
-            carbon_savings = 1 - (round_carbon / self.carbon_history[0])
-            self.best_carbon_savings = max(self.best_carbon_savings, carbon_savings)
+        if results:
+            fit_results = [r for _, r in results]
+            round_energy, round_carbon = aggregate_sustainability_metrics(fit_results)
+            self.energy_history.append(round_energy)
+            self.carbon_history.append(round_carbon)
+            
+            # Calculate carbon savings
+            if server_round > 1:
+                carbon_savings = 1 - (round_carbon / self.carbon_history[0]) if self.carbon_history[0] > 0 else 0
+                self.best_carbon_savings = max(self.best_carbon_savings, carbon_savings)
             
         return aggregated_weights, metrics
         
@@ -32,7 +37,7 @@ class EcoFedStrategy(fl.server.strategy.FedAvg):
         # Aggregate accuracy metrics
         aggregated_loss, aggregated_metrics = super().aggregate_evaluate(server_round, results, failures)
         
-        if aggregated_metrics:
+        if aggregated_metrics and "accuracy" in aggregated_metrics:
             self.accuracy_history.append(aggregated_metrics.get("accuracy", 0.0))
             
         return aggregated_loss, aggregated_metrics
